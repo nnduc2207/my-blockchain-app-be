@@ -82,18 +82,6 @@ router.post('/balance', middleware, function(req, res) {
   }
 });
 
-router.post('/add-nodes', function(req, res) {
-  try {
-    const { nodes } = req.body;
-    if (!nodes) throw "NODES IS REQUIRED";
-    if (!Array.isArray(nodes)) throw "NODES MUST BE ARRAY";
-    addNodes(nodes);
-    return res.send(true);
-  } catch (error) {
-    return res.status(400).send({ error: error.toString() })
-  }
-});
-
 router.get('/replace-chain', middleware, async function(req, res) {
   try {
     const result = replaceChain()

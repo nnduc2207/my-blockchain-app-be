@@ -1,8 +1,8 @@
 const crypto = require('crypto');
 const axios = require('axios');
+const { removeNode, listNodesWithoutMe } = require('../utils');
 const EC = require('elliptic').ec;
 const ec = new EC('secp256k1');
-const debug = require('debug')('savjeecoin:blockchain');
 
 class Transaction {
   /**
@@ -127,7 +127,6 @@ class Block {
 
 class Blockchain {
   constructor() {
-    this.nodes = [];
     this.chain = [];
     this.difficulty = 2;
     this.pendingTransactions = [];
@@ -136,8 +135,9 @@ class Blockchain {
 
   async replaceChain() {
     let chain = this.chain;
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
+    const nodes = listNodesWithoutMe(`http://localhost:${process.env.PORT}`);
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
       try {
         const response = await axios.get(`${node}/chain`)
         const data = response.data
@@ -147,16 +147,11 @@ class Blockchain {
         }
       } catch (error) {
         console.log(error);
+        removeNode(node);
       }
     }
     this.chain = chain
     if (this.chain.length == 0) this.chain = [this.createGenesisBlock()]
-  }
-
-  addNodes(newnodes) {
-    newnodes.forEach(node => {
-      if(!this.nodes.includes(node)) this.nodes.push(node);
-    });
   }
 
   /**
@@ -185,27 +180,10 @@ class Blockchain {
    */
   async minePendingTransactions(miningRewardAddress) {
     //Get all transactions from all nodes
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
-      const response = await axios.get(`${node}/pending-transactions`)
-      const data = response.data
-      this.pendingTransactions = [...this.pendingTransactions, ...data]
-    }
+    const pendingTransactions = await this.getAllPendingTransaction();
 
     //Check valid transactions
-    this.pendingTransactions = this.pendingTransactions.sort((x, y) => x.timestamp - y.timestamp)
-    const wallets = {};
-    const doTransactions = [];
-    for (let i = 0; i < this.pendingTransactions.length; i++) {
-      const tx = this.pendingTransactions[i];
-      wallets[tx.fromAddress] = (wallets[tx.fromAddress] !== undefined) ? wallets[tx.fromAddress] : this.getBalanceOfAddress(tx.fromAddress)
-      if (wallets[tx.fromAddress] - tx.amount >= 0) {
-        doTransactions.push(tx);
-        wallets[tx.fromAddress] = wallets[tx.fromAddress] - tx.amount
-        wallets[tx.toAddress] = ((wallets[tx.toAddress] !== undefined) ? wallets[tx.toAddress] : this.getBalanceOfAddress(tx.toAddress)) + tx.amount
-      }
-    }
-    this.pendingTransactions = doTransactions;
+    this.pendingTransactions = this.validatePendingTransactions(pendingTransactions);
 
     // Reward for miner
     const rewardTx = new Transaction(null, miningRewardAddress, this.miningReward);
@@ -214,9 +192,9 @@ class Blockchain {
     // mine
     const block = new Block(Date.now(), this.pendingTransactions, this.getLatestBlock().hash);
     block.mineBlock(this.difficulty);
-
     this.chain.push(block);
 
+    // empty pending list
     this.pendingTransactions = [];
 
     return block;
@@ -350,6 +328,37 @@ class Blockchain {
     }
 
     return true;
+  }
+
+  async getAllPendingTransaction() {
+    const nodes = listNodesWithoutMe(`http://localhost:${process.env.PORT}`)
+    let pendingTransactions = this.pendingTransactions
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const response = await axios.get(`${node}/pending-transactions`)
+      const data = response.data
+      pendingTransactions = [...pendingTransactions, ...data]
+    }
+
+    //Check valid transactions
+    pendingTransactions = pendingTransactions.sort((x, y) => x.timestamp - y.timestamp)
+    return pendingTransactions;
+  }
+
+  validatePendingTransactions(pendingTransactions) {
+    pendingTransactions = pendingTransactions.sort((x, y) => x.timestamp - y.timestamp)
+    const wallets = {};
+    const validTransactions = [];
+    for (let i = 0; i < pendingTransactions.length; i++) {
+      const tx = pendingTransactions[i];
+      wallets[tx.fromAddress] = (wallets[tx.fromAddress] !== undefined) ? wallets[tx.fromAddress] : this.getBalanceOfAddress(tx.fromAddress)
+      if (wallets[tx.fromAddress] - tx.amount >= 0) {
+        validTransactions.push(tx);
+        wallets[tx.fromAddress] = wallets[tx.fromAddress] - tx.amount
+        wallets[tx.toAddress] = ((wallets[tx.toAddress] !== undefined) ? wallets[tx.toAddress] : this.getBalanceOfAddress(tx.toAddress)) + tx.amount
+      }
+    }
+    return validTransactions;
   }
 }
 

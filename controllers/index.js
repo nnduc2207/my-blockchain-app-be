@@ -39,10 +39,6 @@ const getBalance = (address) => {
   return blockchain.getBalanceOfAddress(address);
 }
 
-const addNodes = (nodes) => {
-  blockchain.addNodes(nodes);
-}
-
 const replaceChain = async () => {
   return await blockchain.replaceChain();
 }
@@ -58,7 +54,6 @@ module.exports = {
   mine,
   sendToken,
   getBalance,
-  addNodes,
   replaceChain,
   pendingTransactions,
   middleware,

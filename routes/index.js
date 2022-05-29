@@ -11,6 +11,9 @@ const {
   replaceChain,
   pendingTransactions,
   middleware,
+  getAllPendingTransactions,
+  getValidPendingTransactions,
+  getTransactionsByAddress,
 } = require('../controllers/index')
 
 /* GET home page. */
@@ -94,6 +97,35 @@ router.get('/replace-chain', middleware, async function(req, res) {
 router.get('/pending-transactions', middleware, function(req, res) {
   try {
     const result = pendingTransactions();
+    return res.send(JSON.stringify(result));
+  } catch (error) {
+    return res.status(400).send({ error: error.toString() })
+  }
+});
+
+router.get('/all-pending-transactions', middleware, async function(req, res) {
+  try {
+    const result = await getAllPendingTransactions();
+    return res.send(JSON.stringify(result));
+  } catch (error) {
+    return res.status(400).send({ error: error.toString() })
+  }
+});
+
+router.get('/all-valid-pending-transactions', middleware, async function(req, res) {
+  try {
+    const result = await getValidPendingTransactions();
+    return res.send(JSON.stringify(result));
+  } catch (error) {
+    return res.status(400).send({ error: error.toString() })
+  }
+});
+
+router.post('/transactions-by-address', middleware, function(req, res) {
+  try {
+    const { address } = req.body;
+    if (!address) throw "ADDRESS IS REQUIRED";
+    const result = getTransactionsByAddress(address);
     return res.send(JSON.stringify(result));
   } catch (error) {
     return res.status(400).send({ error: error.toString() })

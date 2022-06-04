@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "start": "node ./bin/www",
+    "start": "set PORT=3001&&node ./bin/www",
     "node1": "set PORT=3001&&node ./bin/www",
     "node2": "set PORT=3002&&node ./bin/www",
     "node3": "set PORT=3003&&node ./bin/www"

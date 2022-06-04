@@ -61,7 +61,9 @@ router.post('/mine', middleware, async function(req, res) {
 
 router.post('/send-token', middleware, function(req, res) {
   try {
-    const { from, to, amount, privateKey } = req.body;
+    const { from, to, privateKey } = req.body;
+    let { amount } = req.body;
+    amount = +amount;
     if (!from) throw "FROM IS REQUIRED";
     if (!to) throw "TO IS REQUIRED";
     if (!amount || amount < 0) throw "AMOUNT IS REQUIRED";

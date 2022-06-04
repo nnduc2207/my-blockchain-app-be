@@ -5,48 +5,40 @@ const EC = require('elliptic').ec;
 const ec = new EC('secp256k1');
 
 class Transaction {
-  /**
-   * @param {string} fromAddress
-   * @param {string} toAddress
-   * @param {number} amount
-   */
   constructor(fromAddress, toAddress, amount) {
     this.fromAddress = fromAddress;
     this.toAddress = toAddress;
     this.amount = amount;
     this.timestamp = Date.now();
+    this.signature = '';
   }
 
-  /**
-   * Creates a SHA256 hash of the transaction
-   *
-   * @returns {string}
-   */
+  static importData({ fromAddress, toAddress, amount, timestamp, signature }) {
+    const newTxn = new Transaction(undefined, undefined, undefined);
+    newTxn.fromAddress = fromAddress;
+    newTxn.toAddress = toAddress;
+    newTxn.amount = amount;
+    newTxn.timestamp = timestamp;
+    newTxn.signature = signature;
+    return newTxn;
+  }
+
   calculateHash() {
     return crypto.createHash('sha256').update(this.fromAddress + this.toAddress + this.amount + this.timestamp).digest('hex');
   }
 
-  /**
-   * Signs a transaction with the given signingKey (which is an Elliptic keypair
-   * object that contains a private key). The signature is then stored inside the
-   * transaction object and later stored on the blockchain.
-   *
-   * @param {string} signingKey
-   */
   signTransaction(privateKey) {
-    // You can only send a transaction from the wallet that is linked to your
-    // key. So here we check if the fromAddress matches your publicKey
+    // Chỉ có thể tạo giao dịch từ ví của bản thân vì thế cần khoá bí mật xác nhận
+    // Thư viện elliptic có thể dễ dàng tìm kiếm một chiều từ privatekey ra publickey bằng cách tìm ra signingkey
     const signingKey = ec.keyFromPrivate(privateKey);
     if (signingKey.getPublic('hex') !== this.fromAddress) {
       throw new Error('You cannot sign transactions for other wallets!');
     }
     
-
-    // Calculate the hash of this transaction, sign it with the key
-    // and store it inside the transaction object
+    // Tính chuỗi băm của giao dịch và kí nó với khoá kí của cặp khoá (private-public)
+    // và lưu trữ vào giao dịch để xác thực về sau
     const hashTx = this.calculateHash();
     const sig = signingKey.sign(hashTx, 'base64');
-
     this.signature = sig.toDER('hex');
   }
 
@@ -57,9 +49,9 @@ class Transaction {
    * @returns {boolean}
    */
   isValid() {
-    // If the transaction doesn't have a from address we assume it's a
-    // mining reward and that it's valid. You could verify this in a
-    // different way (special field for instance)
+    // Nếu giao dịch không có địa chỉ đi thì trả về true
+    // Vì đây là giao dịch thưởng
+    // Nếu không phải thì kiểm tra chữ kí
     if (this.fromAddress === null) return true;
 
     if (!this.signature || this.signature.length === 0) {
@@ -72,11 +64,6 @@ class Transaction {
 }
 
 class Block {
-  /**
-   * @param {number} timestamp
-   * @param {Transaction[]} transactions
-   * @param {string} previousHash
-   */
   constructor(timestamp, transactions, previousHash = '') {
     this.previousHash = previousHash;
     this.timestamp = timestamp;
@@ -85,22 +72,23 @@ class Block {
     this.hash = this.calculateHash();
   }
 
-  /**
-   * Returns the SHA256 of this block (by processing all the data stored
-   * inside this block)
-   *
-   * @returns {string}
-   */
+  static importData({ previousHash, timestamp, transactions, nonce, hash }) {
+    const newBlock = new Block(undefined, undefined, undefined)
+    newBlock.previousHash = previousHash;
+    newBlock.timestamp = timestamp;
+    newBlock.transactions = [];
+    newBlock.nonce = nonce;
+    newBlock.hash = hash;
+    for (const txn of transactions) {
+      newBlock.transactions.push(Transaction.importData(txn));
+    }
+    return newBlock;
+  }
+
   calculateHash() {
     return crypto.createHash('sha256').update(this.previousHash + this.timestamp + JSON.stringify(this.transactions) + this.nonce).digest('hex');
   }
 
-  /**
-   * Starts the mining process on the block. It changes the 'nonce' until the hash
-   * of the block starts with enough zeros (= difficulty)
-   *
-   * @param {number} difficulty
-   */
   mineBlock(difficulty) {
     while (this.hash.substring(0, difficulty) !== Array(difficulty + 1).join('0')) {
       this.nonce++;
@@ -108,12 +96,6 @@ class Block {
     }
   }
 
-  /**
-   * Validates all the transactions inside this block (signature + hash) and
-   * returns true if everything checks out. False if the block is invalid.
-   *
-   * @returns {boolean}
-   */
   hasValidTransactions() {
     for (const tx of this.transactions) {
       if (!tx.isValid()) {
@@ -128,112 +110,103 @@ class Block {
 class Blockchain {
   constructor() {
     this.chain = [];
-    this.difficulty = 2;
+    this.difficulty = 4;
     this.pendingTransactions = [];
     this.miningReward = 100;
   }
 
+  static importData(chain) {
+    const newBlockchain = new Blockchain()
+    for (const blockData of chain) {
+      const block = Block.importData(blockData);
+      newBlockchain.chain.push(block)
+    }
+    return newBlockchain;
+  }
+
   async replaceChain() {
     let chain = this.chain;
+    // Danh sách các node khác đăng ký vào mạng blockchain
     const nodes = listNodesWithoutMe(`http://localhost:${process.env.PORT}`);
+
+    // Kiểm tra từng node và cập nhật chain nếu có node chứa chuỗi dài hơn và hợp lệ
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       try {
         const response = await axios.get(`${node}/chain`)
-        const data = response.data
-        if (data.length > chain.length && this.isChainValid(data)) {
+        const data = response.data;
+        const newChain = Blockchain.importData(data);
+        if (newChain.chain.length > chain.length && newChain.isChainValid()) {
           chain = data
           this.pendingTransactions = []
         }
       } catch (error) {
-        console.log(error);
         removeNode(node);
       }
     }
     this.chain = chain
+
+    // Nếu tất cả các node đều chưa có khối nào thì tạo khối Genesis
     if (this.chain.length == 0) this.chain = [this.createGenesisBlock()]
   }
 
-  /**
-   * @returns {Block}
-   */
   createGenesisBlock() {
     return new Block(Date.now(), [], '0');
   }
 
-  /**
-   * Returns the latest block on our chain. Useful when you want to create a
-   * new Block and you need the hash of the previous Block.
-   *
-   * @returns {Block[]}
-   */
   getLatestBlock() {
     return this.chain[this.chain.length - 1];
   }
 
-  /**
-   * Takes all the pending transactions, puts them in a Block and starts the
-   * mining process. It also adds a transaction to send the mining reward to
-   * the given address.
-   *
-   * @param {string} miningRewardAddress
-   */
   async minePendingTransactions(miningRewardAddress) {
-    //Get all transactions from all nodes
+    //Lấy danh sách tất cả pending transaction trên tất cả node
     const pendingTransactions = await this.getAllPendingTransaction();
 
-    //Check valid transactions
+    //Kiểm tra danh sách hợp lệ
     this.pendingTransactions = this.validatePendingTransactions(pendingTransactions);
 
-    // Reward for miner
+    // Phần thưởng cho miner
     const rewardTx = new Transaction(null, miningRewardAddress, this.miningReward);
     this.pendingTransactions.push(rewardTx);
 
     // mine
-    const block = new Block(Date.now(), this.pendingTransactions, this.getLatestBlock().hash);
+    const lastBlock1 = this.getLatestBlock()
+    const block = new Block(Date.now(), this.pendingTransactions, lastBlock1.hash);
     block.mineBlock(this.difficulty);
-    this.chain.push(block);
 
-    // empty pending list
-    this.pendingTransactions = [];
-
-    return block;
+    // Kiểm tra blockchain đã được mine trong khoảng thời gian này hay không
+    await this.replaceChain()
+    const lastBlock2 = this.getLatestBlock()
+    if (lastBlock1.hash === lastBlock2.hash) {
+      this.chain.push(block);
+      
+      // empty pending list
+      this.pendingTransactions = [];
+      return block;
+    }
+    throw 'There is someone has mined before you';
   }
 
-  /**
-   * Add a new transaction to the list of pending transactions (to be added
-   * next time the mining process starts). This verifies that the given
-   * transaction is properly signed.
-   *
-   * @param {Transaction} transaction
-   */
   addTransaction(transaction) {
     if (!transaction.fromAddress || !transaction.toAddress) {
       throw new Error('Transaction must include from and to address');
     }
-
-    // Verify the transactiion
+    // Xác thực chữ kí
     if (!transaction.isValid()) {
       throw new Error('Cannot add invalid transaction to chain');
     }
-    
     if (transaction.amount <= 0) {
       throw new Error('Transaction amount should be higher than 0');
     }
-    
-    // Making sure that the amount sent is not greater than existing balance
+    // Kiểm tra số dư ví
     const walletBalance = this.getBalanceOfAddress(transaction.fromAddress);
     if (walletBalance < transaction.amount) {
       throw new Error('Not enough balance');
     }
 
-    // Get all other pending transactions for the "from" wallet
+    // Kiểm tra số dư ví với các giao dịch chờ
     const pendingTxForWallet = this.pendingTransactions
       .filter(tx => tx.fromAddress === transaction.fromAddress);
-
-    // If the wallet has more pending transactions, calculate the total amount
-    // of spend coins so far. If this exceeds the balance, we refuse to add this
-    // transaction.
     if (pendingTxForWallet.length > 0) {
       const totalPendingAmount = pendingTxForWallet
         .map(tx => tx.amount)
@@ -248,12 +221,6 @@ class Blockchain {
     this.pendingTransactions.push(transaction);
   }
 
-  /**
-   * Returns the balance of a given wallet address.
-   *
-   * @param {string} address
-   * @returns {number} The balance of the wallet
-   */
   getBalanceOfAddress(address) {
     let balance = 0;
 
@@ -272,13 +239,6 @@ class Blockchain {
     return balance;
   }
 
-  /**
-   * Returns a list of all transactions that happened
-   * to and from the given wallet address.
-   *
-   * @param  {string} address
-   * @return {Transaction[]}
-   */
   getAllTransactionsForWallet(address) {
     const txs = [];
 
@@ -289,25 +249,16 @@ class Blockchain {
         }
       }
     }
-
     return txs;
   }
 
-  /**
-   * Loops over all the blocks in the chain and verify if they are properly
-   * linked together and nobody has tampered with the hashes. By checking
-   * the blocks it also verifies the (signed) transactions inside of them.
-   *
-   * @returns {boolean}
-   */
-  isChainValid(chain) {
-    // Check the remaining blocks on the chain to see if there hashes and
-    // signatures are correct
-    for (let i = 0; i < chain.length; i++) {
-      const currentBlock = chain[i];
-      const previousBlock = chain[i != 0 ? i - 1 : 0];
+  isChainValid() {
+    // Kiểm tra các khối trên chuỗi có chuỗi băm và chữ kí hợp lệ hay không
+    for (let i = 0; i < this.chain.length; i++) {
+      const currentBlock = this.chain[i];
+      const previousBlock = this.chain[i != 0 ? i - 1 : 0];
 
-      if (i === 0) {
+      if (i === 0) {  // Khối genesis
         if (currentBlock.previousHash !== "0") return false;
       }
       else {
@@ -315,8 +266,7 @@ class Blockchain {
           return false;
         }
       }
-
-      // check hash
+      // Kiểm tra chuỗi băm
       const hash = crypto.createHash('sha256').update(currentBlock.previousHash + currentBlock.timestamp + JSON.stringify(currentBlock.transactions) + currentBlock.nonce).digest('hex');
       if (currentBlock.hash !== hash) {
         return false;
@@ -324,32 +274,44 @@ class Blockchain {
       if (i !== 0 && currentBlock.hash.substring(0, this.difficulty) !== Array(this.difficulty + 1).join('0')) {
         return false;
       }
+      // Kiểm tra các giao dịch trong các khối
+      if (currentBlock.hasValidTransactions() === false) return false;
     }
-
     return true;
   }
 
   async getAllPendingTransaction() {
+    // Lấy danh sách các node đăng kí trong mạng blockchain trừ bản thân
     const nodes = listNodesWithoutMe(`http://localhost:${process.env.PORT}`)
-    let pendingTransactions = this.pendingTransactions
+    let pendingTransactions = [...this.pendingTransactions]
+    // Gom danh sách pending transaction ở các node khác
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       const response = await axios.get(`${node}/pending-transactions`)
       const data = response.data
-      pendingTransactions = [...pendingTransactions, ...data]
+      for (const element of data) {
+        const txn = Transaction.importData(element)
+        if (txn.isValid() === true) {
+          pendingTransactions.push(txn);
+        }
+      }
     }
 
-    //Check valid transactions
+    //Sắp xếp danh sách theo thời gian tăng dần
     pendingTransactions = pendingTransactions.sort((x, y) => x.timestamp - y.timestamp)
     return pendingTransactions;
   }
 
   validatePendingTransactions(pendingTransactions) {
+    // Sắp xếp danh sách pending transaction theo thời gian tăng dần
     pendingTransactions = pendingTransactions.sort((x, y) => x.timestamp - y.timestamp)
     const wallets = {};
     const validTransactions = [];
     for (let i = 0; i < pendingTransactions.length; i++) {
       const tx = pendingTransactions[i];
+      // Kiểm tra xác thực giao dịch
+      if (tx.isValid() === false) continue;
+      // Kiểm tra số dư của ví
       wallets[tx.fromAddress] = (wallets[tx.fromAddress] !== undefined) ? wallets[tx.fromAddress] : this.getBalanceOfAddress(tx.fromAddress)
       if (wallets[tx.fromAddress] - tx.amount >= 0) {
         validTransactions.push(tx);
